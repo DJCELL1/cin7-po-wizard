@@ -37,7 +37,7 @@ def cin7_get(endpoint, params=None):
 # ---------------------------------------------------------
 @st.cache_data
 def load_products():
-    df = pd.read_csv("products.csv")
+    df = pd.read_csv("Products.csv")
 
     df.columns = [c.strip() for c in df.columns]
 
