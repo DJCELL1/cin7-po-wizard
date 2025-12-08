@@ -9,8 +9,8 @@ from requests.auth import HTTPBasicAuth
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="HDL Purchase Order Builder v3", layout="wide")
-st.title("📦 HDL Purchase Order Builder — Multi-Supplier Auto-Split Edition")
+st.set_page_config(page_title="HDL PO Wizard v3", layout="wide")
+st.title("📦 HDL Purchase Order Builder — Multi-Supplier Edition")
 
 # ---------------------------------------------------------
 # CIN7 CONFIG
@@ -19,66 +19,42 @@ cin7 = st.secrets["cin7"]
 base_url = cin7["base_url"].rstrip("/")
 api_username = cin7["api_username"]
 api_key = cin7["api_key"]
+auth = HTTPBasicAuth(api_username, api_key)
 
 branch_Hamilton = cin7.get("branch_Hamilton", 230)
 branch_Avondale = cin7.get("branch_Avondale", 3)
 
-auth = HTTPBasicAuth(api_username, api_key)
-
 # ---------------------------------------------------------
-# BASIC GET WRAPPER
+# CIN7 GET WRAPPER
 # ---------------------------------------------------------
 def cin7_get(endpoint, params=None):
     url = f"{base_url}/{endpoint}"
     r = requests.get(url, params=params, auth=auth)
-    if r.status_code != 200:
-        return None
-    try:
-        return r.json()
-    except:
-        return None
+    return r.json() if r.status_code == 200 else None
 
 # ---------------------------------------------------------
-# LOAD PRODUCTS.CSV (USED FOR SUPPLIER + CONTACT ID)
+# LOAD PRODUCTS (Supplier Mapping)
 # ---------------------------------------------------------
 @st.cache_data
 def load_products():
-    df = pd.read_csv("Products.csv", dtype=str)
-    df["Code"] = df["Code"].str.upper().str.strip()
-    df["Supplier"] = df["Supplier"].fillna("").astype(str)
-    df["Contact ID"] = df["Contact ID"].fillna("0").astype(int)
+    df = pd.read_csv("products.csv")
+
+    df.columns = [c.strip() for c in df.columns]
+
+    required = {"Code", "Supplier", "Contact ID"}
+    if not required.issubset(df.columns):
+        st.error("❌ products.csv missing required columns.")
+        st.stop()
+
+    df["Supplier"] = df["Supplier"].astype(str).str.strip()
+    df["Code"] = df["Code"].astype(str).str.upper().str.strip()
+
     return df
 
 products_df = load_products()
 
 # ---------------------------------------------------------
-# SMART FIND ORDER (Q-ref search)
-# ---------------------------------------------------------
-def smart_find_order(qref):
-    q = qref.strip().upper()
-
-    # exact match
-    res = cin7_get("v1/SalesOrders", params={"where": f"reference='{q}'"})
-    if res:
-        return res[0]
-
-    res = cin7_get("v1/SalesOrders", params={"where": f"customerOrderNo='{q}'"})
-    if res:
-        return res[0]
-
-    # partial match
-    res = cin7_get("v1/SalesOrders", params={"where": f"reference like '%{q}%'"})
-    if res:
-        return res[0]
-
-    res = cin7_get("v1/SalesOrders", params={"where": f"customerOrderNo like '%{q}%'"})
-    if res:
-        return res[0]
-
-    return None
-
-# ---------------------------------------------------------
-# BOM SUPPORT
+# BOM LOOKUP
 # ---------------------------------------------------------
 def get_bom(code):
     search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
@@ -101,166 +77,188 @@ def get_bom(code):
     return out
 
 # ---------------------------------------------------------
-# BUILD PO PAYLOAD
+# SMART ORDER SEARCH
 # ---------------------------------------------------------
-def build_single_po_payload(qref, supplier_id, supplier_name, branch_id, df):
-    line_items = []
+def smart_find_order(qref):
+    q = qref.strip().upper()
 
-    for _, r in df.iterrows():
-        parent = r["Item Code"]
-        qty = float(r["Qty"])
-        cost = float(r["Cost"])
+    tests = [
+        f"reference='{q}'",
+        f"customerOrderNo='{q}'",
+        f"reference like '%{q}%'",
+        f"customerOrderNo like '%{q}%'"
+    ]
 
-        bom = get_bom(parent)
-        if bom:
-            for b in bom:
+    for t in tests:
+        res = cin7_get("v1/SalesOrders", params={"where": t})
+        if res:
+            return res[0]
+
+    return None
+
+# ---------------------------------------------------------
+# BUILD MULTI-SUPPLIER PAYLOADS
+# ---------------------------------------------------------
+def build_po_payloads(qref, df):
+    po_groups = []
+
+    for supplier_name, grp in df.groupby("Supplier"):
+
+        supplier_id = int(grp["Contact ID"].iloc[0])
+
+        po_ref = f"PO-{qref}{supplier_name[:4].upper()}"
+
+        line_items = []
+
+        for _, r in grp.iterrows():
+            code = r["Item Code"]
+            qty = float(r["Qty"])
+            cost = float(r["Cost"])
+
+            bom = get_bom(code)
+            if bom:
+                for c in bom:
+                    line_items.append({
+                        "code": c["code"],
+                        "qty": c["qty"] * qty,
+                        "unitPrice": c["unitCost"]
+                    })
+            else:
                 line_items.append({
-                    "code": b["code"],
-                    "qty": b["qty"] * qty,
-                    "unitPrice": b["unitCost"]
+                    "code": code,
+                    "qty": qty,
+                    "unitPrice": cost
                 })
-        else:
-            line_items.append({
-                "code": parent,
-                "qty": qty,
-                "unitPrice": cost
-            })
 
-    # PO Reference format you wanted:
-    # "PO-" + QREF + first 4 letters of supplier (uppercase)
-    abbr = supplier_name[:4].upper()
+        payload = {
+            "reference": po_ref,
+            "supplierId": supplier_id,
+            "memberId": supplier_id,
+            "branchId": 3,
+            "staffId": 1,
+            "enteredById": 1,
+            "isApproved": True,
+            "lineItems": line_items
+        }
 
-    return [{
-        "reference": f"PO-{qref}{abbr}",
-        "supplierId": supplier_id,
-        "memberId": supplier_id,
-        "branchId": branch_id,
-        "isApproved": True,
-        "staffId": 1,
-        "enteredById": 1,
-        "lineItems": line_items
-    }]
+        po_groups.append((supplier_name, po_ref, payload))
+
+    return po_groups
 
 # ---------------------------------------------------------
-# PUSH PO TO CIN7
+# PUSH SINGLE PO
 # ---------------------------------------------------------
 def push_po(payload):
     url = f"{base_url}/v1/PurchaseOrders"
     headers = {"Content-Type": "application/json"}
-    r = requests.post(url, data=json.dumps(payload), headers=headers, auth=auth)
+
+    r = requests.post(url, headers=headers, data=json.dumps([payload]), auth=auth)
     return r.status_code, r.text
 
-# =========================================================
-# UI START
-# =========================================================
-st.header("Step 1 — Enter Q-Ref")
+# ---------------------------------------------------------
+# SESSION STATE SETUP
+# ---------------------------------------------------------
+if "lines" not in st.session_state:
+    st.session_state.lines = None
+
+# ---------------------------------------------------------
+# UI — STEP 1
+# ---------------------------------------------------------
+st.header("Step 1 — Enter Q Ref")
+
 qref = st.text_input("Enter Q-number (e.g. Q19663E.S26):")
 
-# Initialise session state
-if "item_table" not in st.session_state:
-    st.session_state.item_table = pd.DataFrame()
-
-if "loaded" not in st.session_state:
-    st.session_state.loaded = False
-
-# ---------------------------------------------------------
-# LOAD ORDER BUTTON
-# ---------------------------------------------------------
 if st.button("Load Order"):
+
     so = smart_find_order(qref)
-
     if not so:
-        st.error("❌ Could not find Sales Order for this Q-ref.")
+        st.error("❌ No matching Sales Order found.")
         st.stop()
-
-    st.success("Sales Order Loaded Successfully")
 
     company = so.get("company", "")
     project = so.get("projectName", "")
 
-    st.markdown(f"### Customer: **{company}**")
-    st.markdown(f"### Project: **{project}**")
-    st.markdown(f"### Order Ref: **{qref}**")
+    st.success("Sales Order Loaded Successfully")
+    st.write("**Customer:**", company)
+    st.write("**Project:**", project)
+    st.write("**Order Ref:**", qref)
 
-    # Build line table with supplier mapping
     rows = []
     for li in so.get("lineItems", []):
-        pid = li.get("productId", 0)
-        if pid == 0:
+        if li.get("productId", 0) == 0:
             continue
 
         code = li.get("code", "").upper()
         prod_match = products_df[products_df["Code"] == code]
 
         if prod_match.empty:
-            supplier_name = "UNKNOWN"
-            supplier_id = 0
-        else:
-            supplier_name = prod_match["Supplier"].iloc[0]
-            supplier_id = prod_match["Contact ID"].iloc[0]
+            continue
+
+        supplier = prod_match["Supplier"].iloc[0]
+        supplier_id = prod_match["Contact ID"].iloc[0]
 
         rows.append({
             "Select": False,
-            "Supplier": supplier_name,
-            "SupplierID": supplier_id,
+            "Supplier": supplier,
+            "Contact ID": supplier_id,
             "Item Code": code,
             "Item Name": li.get("name", ""),
             "Qty": li.get("qty", 0),
             "Cost": li.get("unitCost", 0)
         })
 
-    st.session_state.item_table = pd.DataFrame(rows)
-    st.session_state.loaded = True
+    st.session_state.lines = pd.DataFrame(rows)
 
 # ---------------------------------------------------------
-# SHOW TABLE IF LOADED
+# UI — STEP 2: Select Items
 # ---------------------------------------------------------
-if st.session_state.loaded:
+if st.session_state.lines is not None:
 
-    st.subheader("Step 2 — Review & Select Items")
+    st.header("Step 2 — Select Items to Order")
+
     edited = st.data_editor(
-        st.session_state.item_table,
-        key="editor",
+        st.session_state.lines,
         num_rows="dynamic",
-        hide_index=True
+        use_container_width=True,
+        column_config={
+            "Select": st.column_config.CheckboxColumn(required=False)
+        }
     )
 
-    st.session_state.item_table = edited
+    st.session_state.lines = edited
 
-    st.subheader("Step 3 — Push POs")
+# ---------------------------------------------------------
+# UI — STEP 3: PUSH MULTIPLE POs
+# ---------------------------------------------------------
+if st.session_state.lines is not None:
 
-    if st.button("Create Purchase Orders"):
+    st.header("Step 3 — Create Purchase Orders")
 
-        df = st.session_state.item_table
-        selected = df[df["Select"] == True]
+    if st.button("Create POs"):
+        selected = st.session_state.lines[st.session_state.lines["Select"] == True]
 
         if selected.empty:
-            st.error("No items selected!")
+            st.error("❌ No items selected.")
             st.stop()
 
-        grouped = selected.groupby("Supplier")
+        groups = {}
 
-        results = []
+        for _, r in selected.iterrows():
+            supplier = r["Supplier"]
+            groups.setdefault(supplier, []).append(r)
 
-        for supplier, grp in grouped:
-            supplier_id = int(grp["SupplierID"].iloc[0])
-            branch_id = branch_Avondale   # default for now
+        for supplier, items in groups.items():
+            df_grp = pd.DataFrame(items)
+            po_ref = f"PO-{qref}{supplier[:4].upper()}"
 
-            payload = build_single_po_payload(
-                qref=qref,
-                supplier_id=supplier_id,
-                supplier_name=supplier,
-                branch_id=branch_id,
-                df=grp
-            )
+            st.write(f"📦 **Creating PO:** {po_ref}")
 
-            status, resp = push_po(payload)
-            results.append((supplier, status, resp))
+            payloads = build_po_payloads(qref, df_grp)
 
-        st.subheader("PO Creation Results")
+            for sup, ref, payload in payloads:
+                status, resp = push_po(payload)
+                if status == 200:
+                    st.success(f"{ref} ✔️ Created")
+                else:
+                    st.error(f"{ref} ❌ Failed — {resp}")
 
-        for supplier, status, resp in results:
-            if status == 200:
-                st.success(f"PO for {supplier} created successfully")
-            else:
-                st.error(f"Failed for {supplier}: {resp}")
