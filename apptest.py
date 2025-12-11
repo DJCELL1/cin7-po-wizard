@@ -2,48 +2,15 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
-import threading
-import time
+import re
+from difflib import SequenceMatcher
 from requests.auth import HTTPBasicAuth
-
-# ---------------------------------------------------------
-# DB IMPORTS
-# ---------------------------------------------------------
-from database.load_products import load_products
-from database.incremental_sync_products import sync_products
-
-
-# ---------------------------------------------------------
-# BACKGROUND SYNC THREAD
-# ---------------------------------------------------------
-sync_lock = threading.Lock()
-
-def background_sync(interval_minutes=15):
-    while True:
-        try:
-            with sync_lock:
-                print("Running background product sync, uce…")
-                sync_products()
-                print("Background sync complete.")
-        except Exception as e:
-            print("Background sync error:", e)
-
-        time.sleep(interval_minutes * 60)
-
-
-# Start thread once
-if "sync_thread_started" not in st.session_state:
-    thread = threading.Thread(target=background_sync, args=(15,), daemon=True)
-    thread.start()
-    st.session_state["sync_thread_started"] = True
-
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="HDL PO Wizard v3", layout="wide")
 st.title("📦 HDL Purchase Order Builder — Multi-Supplier Edition")
-
 
 # ---------------------------------------------------------
 # CIN7 CONFIG
@@ -57,7 +24,6 @@ auth = HTTPBasicAuth(api_username, api_key)
 branch_Hamilton = cin7.get("branch_Hamilton", 230)
 branch_Avondale = cin7.get("branch_Avondale", 3)
 
-
 # ---------------------------------------------------------
 # CIN7 GET WRAPPER
 # ---------------------------------------------------------
@@ -66,32 +32,26 @@ def cin7_get(endpoint, params=None):
     r = requests.get(url, params=params, auth=auth)
     return r.json() if r.status_code == 200 else None
 
-
 # ---------------------------------------------------------
-# LOAD PRODUCTS FROM DATABASE
+# LOAD PRODUCTS (Supplier Mapping)
 # ---------------------------------------------------------
 @st.cache_data
-def load_products_cached():
-    df = load_products()  # loads from SQLite DB
+def load_products():
+    df = pd.read_csv("Products.csv")
 
-    # Standardise column names for compatibility
-    df.rename(columns={
-        "code": "Code",
-        "supplierName": "Supplier",
-        "supplierId": "Contact ID",
-        "supplierCode": "Supplier Code",
-        "name": "Item Name"
-    }, inplace=True)
+    df.columns = [c.strip() for c in df.columns]
 
-    # Clean formats
-    df["Code"] = df["Code"].str.upper().str.strip()
+    required = {"Code", "Supplier", "Contact ID"}
+    if not required.issubset(df.columns):
+        st.error("❌ products.csv missing required columns.")
+        st.stop()
+
     df["Supplier"] = df["Supplier"].astype(str).str.strip()
+    df["Code"] = df["Code"].astype(str).str.upper().str.strip()
 
     return df
 
-
-products_df = load_products_cached()
-
+products_df = load_products()
 
 # ---------------------------------------------------------
 # BOM LOOKUP
@@ -116,7 +76,6 @@ def get_bom(code):
         })
     return out
 
-
 # ---------------------------------------------------------
 # SMART ORDER SEARCH
 # ---------------------------------------------------------
@@ -137,7 +96,6 @@ def smart_find_order(qref):
 
     return None
 
-
 # ---------------------------------------------------------
 # BUILD MULTI-SUPPLIER PAYLOADS
 # ---------------------------------------------------------
@@ -147,6 +105,7 @@ def build_po_payloads(qref, df):
     for supplier_name, grp in df.groupby("Supplier"):
 
         supplier_id = int(grp["Contact ID"].iloc[0])
+
         po_ref = f"PO-{qref}{supplier_name[:4].upper()}"
 
         line_items = []
@@ -186,7 +145,6 @@ def build_po_payloads(qref, df):
 
     return po_groups
 
-
 # ---------------------------------------------------------
 # PUSH SINGLE PO
 # ---------------------------------------------------------
@@ -197,9 +155,14 @@ def push_po(payload):
     r = requests.post(url, headers=headers, data=json.dumps([payload]), auth=auth)
     return r.status_code, r.text
 
+# ---------------------------------------------------------
+# SESSION STATE SETUP
+# ---------------------------------------------------------
+if "lines" not in st.session_state:
+    st.session_state.lines = None
 
 # ---------------------------------------------------------
-# UI — STEP 1: ENTER Q REF
+# UI — STEP 1
 # ---------------------------------------------------------
 st.header("Step 1 — Enter Q Ref")
 
@@ -222,8 +185,10 @@ if st.button("Load Order"):
 
     rows = []
     for li in so.get("lineItems", []):
-        code = li.get("code", "").upper()
+        if li.get("productId", 0) == 0:
+            continue
 
+        code = li.get("code", "").upper()
         prod_match = products_df[products_df["Code"] == code]
 
         if prod_match.empty:
@@ -244,11 +209,10 @@ if st.button("Load Order"):
 
     st.session_state.lines = pd.DataFrame(rows)
 
-
 # ---------------------------------------------------------
-# UI — STEP 2: SELECT ITEMS
+# UI — STEP 2: Select Items
 # ---------------------------------------------------------
-if st.session_state.get("lines") is not None:
+if st.session_state.lines is not None:
 
     st.header("Step 2 — Select Items to Order")
 
@@ -263,11 +227,10 @@ if st.session_state.get("lines") is not None:
 
     st.session_state.lines = edited
 
-
 # ---------------------------------------------------------
-# UI — STEP 3: PUSH POs
+# UI — STEP 3: PUSH MULTIPLE POs
 # ---------------------------------------------------------
-if st.session_state.get("lines") is not None:
+if st.session_state.lines is not None:
 
     st.header("Step 3 — Create Purchase Orders")
 
@@ -298,3 +261,4 @@ if st.session_state.get("lines") is not None:
                     st.success(f"{ref} ✔️ Created")
                 else:
                     st.error(f"{ref} ❌ Failed — {resp}")
+
