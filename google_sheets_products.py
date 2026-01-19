@@ -33,8 +33,10 @@ def load_products_from_sheets(sheet_id=None):
 
         # Try to use service account credentials if available
         if "google" in st.secrets:
+            # Convert Streamlit secrets to dict for Google API
+            google_creds = dict(st.secrets["google"])
             creds = Credentials.from_service_account_info(
-                st.secrets["google"],
+                google_creds,
                 scopes=SCOPES
             )
             client = gspread.authorize(creds)
