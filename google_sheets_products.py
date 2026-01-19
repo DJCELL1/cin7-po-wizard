@@ -93,7 +93,7 @@ def load_products_from_sheets(sheet_id=None):
     except Exception as e:
         st.error(f"❌ Error loading data from Google Sheets: {str(e)}")
         st.error(f"Make sure the sheet is shared with your service account or published to web.")
-        st.stop()
+        raise
 
 
 def get_product_by_code(df, code):
