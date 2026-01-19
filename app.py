@@ -31,23 +31,38 @@ def cin7_get(endpoint, params=None):
     return r.json() if r.status_code == 200 else None
 
 # ---------------------------------------------------------
-# LOAD PRODUCTS FROM CSV
+# LOAD PRODUCTS FROM GOOGLE SHEETS OR CSV
 # ---------------------------------------------------------
 @st.cache_data
 def load_products():
-    df = pd.read_csv("Products.csv")
+    """
+    Load products from Google Sheets first, fall back to CSV if not available
+    """
+    try:
+        # Try to load from Google Sheets
+        from google_sheets_products import load_products_from_sheets
+        df = load_products_from_sheets()
+        st.sidebar.success("✅ Using Google Sheets for product data")
+        return df
+    except Exception as e:
+        # Fall back to CSV if Google Sheets fails
+        st.sidebar.warning(f"⚠️ Google Sheets not available, using CSV: {str(e)}")
+        try:
+            df = pd.read_csv("Products.csv")
+            df.columns = [c.strip() for c in df.columns]
 
-    df.columns = [c.strip() for c in df.columns]
+            required = {"Code", "Supplier", "Contact ID"}
+            if not required.issubset(df.columns):
+                st.error("❌ Products.csv missing required columns: Code, Supplier, Contact ID")
+                st.stop()
 
-    required = {"Code", "Supplier", "Contact ID"}
-    if not required.issubset(df.columns):
-        st.error("❌ Products.csv missing required columns: Code, Supplier, Contact ID")
-        st.stop()
+            df["Code"] = df["Code"].astype(str).str.upper().str.strip()
+            df["Supplier"] = df["Supplier"].astype(str).str.strip()
 
-    df["Code"] = df["Code"].astype(str).str.upper().str.strip()
-    df["Supplier"] = df["Supplier"].astype(str).str.strip()
-
-    return df
+            return df
+        except Exception as csv_error:
+            st.error(f"❌ Could not load products from Google Sheets or CSV: {str(csv_error)}")
+            st.stop()
 
 products_df = load_products()
 
@@ -180,10 +195,16 @@ if st.button("Load Order"):
         if prod_match.empty:
             continue
 
+        # Get Supplier Code if available
+        supplier_code = ""
+        if "Supplier Code" in prod_match.columns:
+            supplier_code = prod_match["Supplier Code"].iloc[0]
+
         rows.append({
             "Select": False,
             "Supplier": prod_match["Supplier"].iloc[0],
             "Contact ID": prod_match["Contact ID"].iloc[0],
+            "Supplier Code": supplier_code,
             "Item Code": code,
             "Item Name": li.get("name", ""),
             "Qty": li.get("qty", 0),
