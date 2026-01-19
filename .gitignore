@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 .streamlit/
 secrets.toml
+
+# Google Service Account Credentials
+credentials.json
+*-credentials.json
+service-account*.json
+
+# Backup files
+*_old.py

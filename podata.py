@@ -2,15 +2,15 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
-import psycopg2
 from requests.auth import HTTPBasicAuth
 from typing import Optional, Dict, Any, Tuple
+from db_config import get_product_database
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="HDL PO Wizard v4", layout="wide")
-st.title("📦 HDL Purchase Order Builder — Multi-Supplier Edition (Railway Version)")
+st.title("📦 HDL Purchase Order Builder — Multi-Supplier Edition (Google Sheets Version)")
 
 # ---------------------------------------------------------
 # CIN7 CONFIG
@@ -25,42 +25,10 @@ branch_Hamilton = cin7.get("branch_Hamilton", cin7.get("branch_hamilton_id", 230
 branch_Avondale = cin7.get("branch_Avondale", cin7.get("branch_avondale_id", 3))
 
 # ---------------------------------------------------------
-# RAILWAY CONFIG
+# GOOGLE SHEETS DATABASE CONFIG
 # ---------------------------------------------------------
-railway = st.secrets.get("railway", {})
-RAILWAY_BASE_URL = (railway.get("base_url") or "").rstrip("/")
-if not RAILWAY_BASE_URL:
-    st.error("❌ Missing [railway].base_url in secrets.toml")
-    st.stop()
-
-# ---------------------------------------------------------
-# DATABASE CONFIG
-# ---------------------------------------------------------
-railway_db = st.secrets.get("railway_db", {})
-DB_HOST = railway_db.get("host", "")
-DB_PORT = railway_db.get("port", 5432)
-DB_NAME = railway_db.get("database", "railway")
-DB_USER = railway_db.get("user", "postgres")
-DB_PASSWORD = railway_db.get("password", "")
-
-# ---------------------------------------------------------
-# DATABASE HELPERS
-# ---------------------------------------------------------
-@st.cache_resource
-def get_db_connection():
-    """Get a cached database connection."""
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD
-        )
-        return conn
-    except Exception as e:
-        st.error(f"❌ Database connection failed: {e}")
-        return None
+# Products are now stored in Google Sheets instead of PostgreSQL
+# See db_config.py and MIGRATION_GUIDE.md for details
 
 # ---------------------------------------------------------
 # HTTP HELPERS
@@ -70,67 +38,56 @@ def cin7_get(endpoint: str, params: Optional[Dict[str, Any]] = None):
     r = requests.get(url, params=params, auth=auth, timeout=30)
     return r.json() if r.status_code == 200 else None
 
-def railway_get(path: str, params: Optional[Dict[str, Any]] = None):
-    url = f"{RAILWAY_BASE_URL}{path}"
-    try:
-        r = requests.get(url, params=params, timeout=20)
-        if r.status_code != 200:
-            return None
-        return r.json()
-    except Exception:
-        return None
-
 # ---------------------------------------------------------
 # DATABASE LOOKUPS (CACHED)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def db_product_by_sku(sku: str) -> Optional[Dict[str, Any]]:
-    """Query cin7_products table directly from PostgreSQL database."""
+    """Query products from Google Sheets database."""
     sku = (sku or "").strip()
     if not sku:
         return None
 
-    conn = get_db_connection()
-    if not conn:
+    db = get_product_database()
+    if not db:
         return None
 
     try:
-        cursor = conn.cursor()
-        query = "SELECT * FROM cin7_products WHERE sku = %s LIMIT 1"
-        cursor.execute(query, (sku,))
+        # Search for SKU in the database
+        results = db.search("sku", sku)
 
-        columns = [desc[0] for desc in cursor.description]
-        row = cursor.fetchone()
-        cursor.close()
+        if len(results) == 0:
+            return None
 
-        if row:
-            return dict(zip(columns, row))
-        return None
+        # Return first match as dictionary
+        return results.iloc[0].to_dict()
     except Exception as e:
         st.warning(f"⚠️ Database query error for SKU {sku}: {e}")
         return None
 
 @st.cache_data(ttl=3600)
 def db_supplier_map_get(supplier_name: str) -> Optional[int]:
-    """Query supplier_map table directly from PostgreSQL database."""
+    """Look up supplier ID from Google Sheets database."""
     supplier_name = (supplier_name or "").strip()
     if not supplier_name:
         return None
 
-    conn = get_db_connection()
-    if not conn:
+    db = get_product_database()
+    if not db:
         return None
 
     try:
-        cursor = conn.cursor()
-        query = "SELECT cin7_contact_id FROM supplier_map WHERE supplier_name = %s LIMIT 1"
-        cursor.execute(query, (supplier_name,))
+        # Search for supplier by name
+        results = db.search("suppliername", supplier_name)
 
-        row = cursor.fetchone()
-        cursor.close()
+        if len(results) == 0:
+            return None
 
-        if row:
-            return int(row[0])
+        # Return supplier ID
+        row = results.iloc[0]
+        supplier_id = row.get("supplierid")
+        if supplier_id:
+            return int(supplier_id)
         return None
     except Exception as e:
         st.warning(f"⚠️ Database query error for supplier {supplier_name}: {e}")
