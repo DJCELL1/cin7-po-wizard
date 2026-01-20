@@ -3,11 +3,14 @@ import pandas as pd
 import requests
 import json
 from requests.auth import HTTPBasicAuth
+from hd_theme import apply_hd_theme, metric_card, add_logo
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="HDL PO Wizard v3", layout="wide")
+apply_hd_theme()
+add_logo(logo_path="Logos-01.jpg", subtitle="Purchase Order Wizard")
 st.title("📦 HDL Purchase Order Builder — Multi-Supplier Edition (CSV Version)")
 
 # ---------------------------------------------------------
