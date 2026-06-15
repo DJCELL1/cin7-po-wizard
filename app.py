@@ -327,11 +327,11 @@ if st.session_state.lines is not None:
 
     branch_choice_main = st.radio(
         "Delivery Branch:",
-        options=["Hamilton (230)", "Avondale (3)"],
+        options=["Avondale (3)", "Hamilton (230)"],
         horizontal=True,
         key="main_branch"
     )
-    main_branch_id = 230 if "Hamilton" in branch_choice_main else 3
+    main_branch_id = 3 if "Avondale" in branch_choice_main else 230
 
     if st.button("Create POs"):
         selected = st.session_state.lines[st.session_state.lines["Select"] == True]
