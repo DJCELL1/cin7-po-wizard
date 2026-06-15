@@ -111,7 +111,7 @@ def smart_find_order(qref):
 # ---------------------------------------------------------
 # BUILD MULTI-SUPPLIER PAYLOADS
 # ---------------------------------------------------------
-def build_po_payloads(qref, df):
+def build_po_payloads(qref, df, branch_id=3):
     po_groups = []
 
     for supplier_name, grp in df.groupby("Supplier"):
@@ -143,7 +143,7 @@ def build_po_payloads(qref, df):
             "reference": po_ref,
             "supplierId": supplier_id,
             "memberId": supplier_id,
-            "branchId": 3,
+            "branchId": branch_id,
             "staffId": 1,
             "enteredById": 1,
             "isApproved": True,
@@ -325,6 +325,14 @@ if st.session_state.lines is not None:
 if st.session_state.lines is not None:
     st.header("Step 3 — Create Purchase Orders")
 
+    branch_choice_main = st.radio(
+        "Delivery Branch:",
+        options=["Hamilton (230)", "Avondale (3)"],
+        horizontal=True,
+        key="main_branch"
+    )
+    main_branch_id = 230 if "Hamilton" in branch_choice_main else 3
+
     if st.button("Create POs"):
         selected = st.session_state.lines[st.session_state.lines["Select"] == True]
 
@@ -338,7 +346,7 @@ if st.session_state.lines is not None:
 
             st.write(f"📦 **Creating PO:** {po_ref}")
 
-            payloads = build_po_payloads(qref, df_grp)
+            payloads = build_po_payloads(qref, df_grp, branch_id=main_branch_id)
             for sup, ref, payload in payloads:
                 status, resp = push_po(payload)
                 if status == 200:
