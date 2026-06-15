@@ -168,6 +168,8 @@ def push_po(payload):
 # ---------------------------------------------------------
 if "lines" not in st.session_state:
     st.session_state.lines = None
+if "so_branch_id" not in st.session_state:
+    st.session_state.so_branch_id = 3
 
 # ---------------------------------------------------------
 # ---------------------------------------------------------
@@ -269,6 +271,8 @@ if st.button("Load Order"):
         st.error("❌ No matching Sales Order found.")
         st.stop()
 
+    st.session_state.so_branch_id = so.get("branchId", 3)
+
     st.success("Sales Order Loaded Successfully")
     st.write("**Customer:**", so.get("company", ""))
     st.write("**Project:**", so.get("projectName", ""))
@@ -325,13 +329,8 @@ if st.session_state.lines is not None:
 if st.session_state.lines is not None:
     st.header("Step 3 — Create Purchase Orders")
 
-    branch_choice_main = st.radio(
-        "Delivery Branch:",
-        options=["Avondale (3)", "Hamilton (230)"],
-        horizontal=True,
-        key="main_branch"
-    )
-    main_branch_id = 3 if "Avondale" in branch_choice_main else 230
+    branch_label = "Hamilton (230)" if st.session_state.so_branch_id == 230 else "Avondale (3)"
+    st.info(f"Delivery Branch: **{branch_label}** (matched from Sales Order)")
 
     if st.button("Create POs"):
         selected = st.session_state.lines[st.session_state.lines["Select"] == True]
@@ -346,7 +345,7 @@ if st.session_state.lines is not None:
 
             st.write(f"📦 **Creating PO:** {po_ref}")
 
-            payloads = build_po_payloads(qref, df_grp, branch_id=main_branch_id)
+            payloads = build_po_payloads(qref, df_grp, branch_id=st.session_state.so_branch_id)
             for sup, ref, payload in payloads:
                 status, resp = push_po(payload)
                 if status == 200:
